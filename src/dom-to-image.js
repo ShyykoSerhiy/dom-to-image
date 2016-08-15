@@ -613,7 +613,7 @@
             var prom;
             if (documentImpl !== document){
                 prom = Promise.all(util.asArray(documentImpl.querySelectorAll('link[rel="stylesheet"][href],link[type="text/css"][href]')).map(function (link) {
-                    var href = link.href;
+                    var href = link.attributes.href.value; //just link.href doesn't work
                     var cached = cache.get(href);
                     return cached ? cached : fetch(href).then(function(result){
                         if (result.ok){
