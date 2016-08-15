@@ -5,6 +5,8 @@
     var inliner = newInliner();
     var fontFaces = newFontFaces();
     var images = newImages();
+    var cache = new Map();
+    var encodedCache = new Map();
 
     var domtoimage = {
         toSvg: toSvg,
@@ -45,7 +47,7 @@
             .then(function (node) {
                 return cloneNode(node, options.filter, true);
             })
-            .then(embedFonts)
+            .then(embedFonts.bind(this, typeof node === 'string'))
             .then(inlineImages)
             .then(applyOptions)
             .then(function (clone) {
@@ -136,6 +138,8 @@
             var canvas = document.createElement('canvas');
             canvas.width = options.width || domNode.scrollWidth;
             canvas.height = options.height || domNode.scrollHeight;
+            var context = canvas.getContext('2d');
+            context.scale(options.scale, options.scale);
 
             if (options.bgcolor) {
                 var ctx = canvas.getContext('2d');
@@ -148,6 +152,11 @@
     }
 
     function cloneNode(node, filter, root) {
+        if (typeof node === 'string'){
+            var temp = document.createElement('div');
+            temp.innerHTML = node;
+            return temp.firstElementChild;
+        }
         if (!root && filter && !filter(node)) return Promise.resolve();
 
         return Promise.resolve(node)
@@ -282,8 +291,13 @@
         }
     }
 
-    function embedFonts(node) {
-        return fontFaces.resolveAll()
+    function embedFonts(isHtml, node) {
+        var documentImpl = document;
+        if (isHtml) {
+            documentImpl = document.implementation.createHTMLDocument();
+            documentImpl.body.innerHTML = node.outerHTML;
+        }
+        return fontFaces.resolveAll(documentImpl)
             .then(function (cssText) {
                 var styleNode = document.createElement('style');
                 node.appendChild(styleNode);
@@ -435,6 +449,11 @@
             var TIMEOUT = 30000;
 
             return new Promise(function (resolve) {
+                var cached = encodedCache.get(url);
+                if (cached){
+                    resolve(cached);
+                    return;
+                }
                 var request = new XMLHttpRequest();
 
                 request.onreadystatechange = done;
@@ -455,6 +474,7 @@
                     var encoder = new FileReader();
                     encoder.onloadend = function () {
                         var content = encoder.result.split(/,/)[1];
+                        encodedCache.set(url, content);
                         resolve(content);
                     };
                     encoder.readAsDataURL(request.response);
@@ -575,8 +595,8 @@
             }
         };
 
-        function resolveAll() {
-            return readAll(document)
+        function resolveAll(documentImpl) {
+            return readAll(documentImpl)
                 .then(function (webFonts) {
                     return Promise.all(
                         webFonts.map(function (webFont) {
@@ -589,13 +609,52 @@
                 });
         }
 
-        function readAll() {
-            return Promise.resolve(util.asArray(document.styleSheets))
-                .then(getCssRules)
-                .then(selectWebFontRules)
-                .then(function (rules) {
-                    return rules.map(newWebFont);
+        function readAll(documentImpl) {
+            var prom;
+            if (documentImpl !== document){
+                prom = Promise.all(util.asArray(documentImpl.querySelectorAll('link[rel="stylesheet"][href],link[type="text/css"][href]')).map(function (link) {
+                    var href = link.href;
+                    var cached = cache.get(href);
+                    return cached ? cached : fetch(href).then(function(result){
+                        if (result.ok){
+                            var text = result.text();
+                            cache.set(href, text);
+                            return text;
+                        } else {
+                            console.warn('Failed to load external css', result.url)
+                            return null;
+                        }
+                    });
+                })).then(function(results){
+                    results = results.filter(Boolean);
+                    var style = documentImpl.createElement('style');
+                    style.innerHTML = results.reduce(function(prev, curr){
+                        return prev + curr;
+                    }, '');
+                    documentImpl.body.appendChild(style);
                 });
+            }
+
+            return prom ? prom.then(readAllPromise) : readAllPromise;
+
+            function readAllPromise(){
+                return Promise.resolve(util.asArray(getStyleSheets()))
+                    .then(getCssRules)
+                    .then(selectWebFontRules)
+                    .then(function (rules) {
+                        return rules.map(newWebFont);
+                    });
+            }
+
+            function getStyleSheets() {
+                if (documentImpl !== document) {
+                    return util.asArray(documentImpl.querySelectorAll('style')).map(function (style) {
+                        return style.sheet;
+                    });
+                } else {
+                    return documentImpl.styleSheets;
+                }
+            }
 
             function selectWebFontRules(cssRules) {
                 return cssRules
