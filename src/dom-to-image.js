@@ -635,7 +635,7 @@
                 });
             }
 
-            return prom ? prom.then(readAllPromise) : readAllPromise;
+            return prom ? prom.then(readAllPromise) : readAllPromise();
 
             function readAllPromise(){
                 return Promise.resolve(util.asArray(getStyleSheets()))
